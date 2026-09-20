@@ -265,6 +265,8 @@ class Devboard(App):
             return
         width = self.board_width(panel)
         log_w = min(LOG_W, (width - GAP * 2) // 2)
+        # ponytail: two git calls per cursor move, measured 10-40ms on this ~/dev. Move them to
+        # an exclusive thread worker if a repo ever makes scrolling the board stutter.
         files = git(r["path"], "status", "--porcelain").splitlines()
         # a clean repo has no second column, so the history runs on into it rather than
         # leaving half the panel blank
@@ -299,7 +301,7 @@ class Devboard(App):
                 code, _, name = files[i].strip().partition(" ")
                 line.append(f"{code:<3}", style=DIM if code == "??" else AMBER)   # red stays for sync trouble
                 right = Text(name.strip(), style=DIM)
-                right.truncate(right_w - 3, overflow="ellipsis")
+                right.truncate(max(0, right_w - 3), overflow="ellipsis")
                 line.append_text(right)
             elif not files:
                 line.append_text(commit(n + i, right_w))
@@ -412,5 +414,44 @@ def selftest():
     print("ok")
 
 
+def smoke(size=(120, 40), timeout=30.0):
+    """Boot the real app headless and check the layout the pure functions can't reach: that the
+       rows the table actually holds are one width, that the strip fills the board, and that the
+       panel agrees with the room it has. Point it at a folder of repos: `devboard ~/work --smoke`."""
+    import asyncio
+
+    async def run():
+        app = Devboard()
+        async with app.run_test(size=size) as pilot:
+            table = app.query_one(DataTable)
+            deadline = time.time() + timeout      # scan() is a thread worker, and git scales with repos
+            while time.time() < deadline and (not app.rows or table.row_count < len(app.rows)):
+                await pilot.pause(); await asyncio.sleep(0.05)
+            assert app.rows, f"scan found no git repos under {ROOT} after {timeout:.0f}s"
+            assert table.row_count == len(app.rows), "board did not finish revealing"
+
+            board = app.board_width(table)
+            want = app.lane_w + app.strip_w + FLAGS_W + AGE_W + GAP * (3 if app.strip_w else 2)
+            for i in range(table.row_count):
+                got = len(table.get_row_at(i)[0].plain)
+                assert got == want, f"row {i} renders {got} wide, the layout says {want}"
+            assert want <= board, f"the board overflows its {board} columns"
+            assert board - want < 8, f"{board - want} columns of slack: the strip stopped filling"
+
+            await pilot.press("down")
+            await pilot.pause()
+            panel = app.query_one("#detail", Static)
+            assert panel.display == (app.detail_rows() >= 2), "panel disagrees with the room it has"
+            if panel.display:
+                assert short(app.rows[table.cursor_row]["path"]) in panel.render().plain
+    asyncio.run(run())
+    print("ok")
+
+
 if __name__ == "__main__":
-    selftest() if "--selftest" in sys.argv else Devboard().run()
+    if "--selftest" in sys.argv:
+        selftest()
+    elif "--smoke" in sys.argv:
+        smoke()
+    else:
+        Devboard().run()

@@ -19,9 +19,10 @@ Repos sort by last commit, freshest first.
 ## Run
 
 ```sh
-./devboard.py            # scans ~/dev
-./devboard.py ~/work     # or any folder of repos
-./devboard.py --selftest
+./devboard.py                # scans ~/dev
+./devboard.py ~/work         # or any folder of repos
+./devboard.py --selftest     # the pure functions: ages, flags, the strip's geometry
+./devboard.py --smoke        # boots it headless and checks the layout holds together
 ```
 
 Single file, [uv](https://docs.astral.sh/uv/) shebang — it installs Textual on first run. Put it
