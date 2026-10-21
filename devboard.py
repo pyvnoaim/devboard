@@ -226,6 +226,8 @@ class Devboard(App):
         self.query_one("#head", Static).update(t)
 
     def reveal_one(self) -> None:
+        if self.reveal is None:          # a tick already queued when the timer was stopped
+            return
         table = self.query_one(DataTable)
         if not self.queue:
             self.reveal.stop(); self.reveal = None

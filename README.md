@@ -5,35 +5,31 @@
 
 What did I leave unfinished. A terminal dashboard for a folder of git repos.
 
-```
-▌ devboard v0.1.0                                    ~/dev · 10 repos · 4 dirty · 175d → now
-──────────────────────────────────────────────────────────────────────────────────────────
-  ▌ kova                ▪▪▪▪▪▪▪ ▪▪▪▪·▪· ··▪▪··· ▪·▪▪▪·▪ ▪▪▪▪·▪·                        21h
-  ▌ cue           ●6    ······· ·▪▪▪▪▪▪ ▪··▪▪·· ······▪ ▪▪▪▪·▪▪                         4d
-  ▌ kovapresets   ↓2    ·▪··▪▪▪ ······· ▪······ ······· ·······                        1mo
-──────────────────────────────────────────────────────────────────────────────────────────
-▌ ~/dev/cue  main                         uncommitted 6
-recent                                    M   CHANGELOG.md
-d1c2280  the page says a mail is a ticket  ??  COMMERCIAL-LICENSE.md
-```
+![devboard showing eight repos with their status badges and commit heat strips](assets/screenshot.svg)
 
 Repos sort by last commit, freshest first.
 
-## Requirements
+## Install
 
-`git`, [uv](https://docs.astral.sh/uv/), and macOS or Linux. uv provides Python 3.9+ and Textual.
+```sh
+mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/pyvnoaim/devboard/main/devboard.py -o ~/.local/bin/devboard && chmod +x ~/.local/bin/devboard
+```
+
+Or try it without installing: `uv run https://raw.githubusercontent.com/pyvnoaim/devboard/main/devboard.py`
+
+Needs `git` and [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`), on macOS or
+Linux. uv fetches Python and Textual on first run. Update by running the install line again.
 
 ## Run
 
 ```sh
-./devboard.py                # scans ~/dev
-./devboard.py ~/work         # or any folder of repos
-./devboard.py --selftest     # the pure functions: ages, flags, the strip's geometry
-./devboard.py --smoke        # boots it headless and checks the layout holds together
+devboard                # scans ~/dev
+devboard ~/work         # or any folder of repos
+devboard --selftest     # the pure functions: ages, flags, the strip's geometry
+devboard --smoke        # boots it headless and checks the layout holds together
 ```
 
-Single file, [uv](https://docs.astral.sh/uv/) shebang — it installs Textual on first run. Put it
-on `PATH` with a symlink: `ln -s "$PWD/devboard.py" ~/.local/bin/devboard`.
+Working on it from a clone? `ln -s "$PWD/devboard.py" ~/.local/bin/devboard` instead.
 
 ## Keys
 
