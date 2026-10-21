@@ -1,0 +1,21 @@
+[project]
+name = "devboard"
+version = "0.1.0"
+description = "What did I leave unfinished. A terminal dashboard for a folder of git repos."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["textual>=0.80"]
+
+[project.urls]
+Repository = "https://github.com/pyvnoaim/devboard"
+
+[project.scripts]
+devboard = "devboard:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["devboard"]

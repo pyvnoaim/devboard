@@ -450,7 +450,7 @@ def smoke(size=(120, 40), timeout=30.0):
     print("ok")
 
 
-if __name__ == "__main__":
+def main():
     if "--selftest" not in sys.argv and not ROOT.is_dir():
         sys.exit(f"devboard: {ROOT} is not a directory")
     if "--selftest" in sys.argv:
@@ -459,3 +459,7 @@ if __name__ == "__main__":
         smoke()
     else:
         Devboard().run()
+
+
+if __name__ == "__main__":
+    main()

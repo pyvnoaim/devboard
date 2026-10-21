@@ -12,13 +12,11 @@ Repos sort by last commit, freshest first.
 ## Install
 
 ```sh
-mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/pyvnoaim/devboard/main/devboard.py -o ~/.local/bin/devboard && chmod +x ~/.local/bin/devboard
+uv tool install git+https://github.com/pyvnoaim/devboard
 ```
 
-Or try it without installing: `uv run https://raw.githubusercontent.com/pyvnoaim/devboard/main/devboard.py`
-
-Needs `git` and [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`), on macOS or
-Linux. uv fetches Python and Textual on first run. Update by running the install line again.
+Needs `git` and [uv](https://docs.astral.sh/uv/), on macOS or Linux. Update with `uv tool upgrade devboard`.
+Try it without installing: `uvx --from git+https://github.com/pyvnoaim/devboard devboard`.
 
 ## Run
 
@@ -29,7 +27,7 @@ devboard --selftest     # the pure functions: ages, flags, the strip's geometry
 devboard --smoke        # boots it headless and checks the layout holds together
 ```
 
-Working on it from a clone? `ln -s "$PWD/devboard.py" ~/.local/bin/devboard` instead.
+From a clone, `./devboard.py` runs it directly.
 
 ## Keys
 
