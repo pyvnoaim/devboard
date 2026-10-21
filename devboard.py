@@ -117,7 +117,7 @@ def editor_cmd(env=None):
     """GUI editor, so opening a repo never fights the TUI for the terminal."""
     env = os.environ if env is None else env
     return (env.get("DEVBOARD_EDITOR") or shutil.which("code") or shutil.which("cursor")
-            or shutil.which("zed") or "open")
+            or shutil.which("zed") or ("open" if sys.platform == "darwin" else "xdg-open"))
 
 
 def short(p):
@@ -449,6 +449,8 @@ def smoke(size=(120, 40), timeout=30.0):
 
 
 if __name__ == "__main__":
+    if "--selftest" not in sys.argv and not ROOT.is_dir():
+        sys.exit(f"devboard: {ROOT} is not a directory")
     if "--selftest" in sys.argv:
         selftest()
     elif "--smoke" in sys.argv:

@@ -1,5 +1,8 @@
 # devboard
 
+[![ci](https://github.com/pyvnoaim/devboard/actions/workflows/ci.yml/badge.svg)](https://github.com/pyvnoaim/devboard/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 What did I leave unfinished. A terminal dashboard for a folder of git repos.
 
 ```
@@ -15,6 +18,10 @@ d1c2280  the page says a mail is a ticket  ??  COMMERCIAL-LICENSE.md
 ```
 
 Repos sort by last commit, freshest first.
+
+## Requirements
+
+`git`, [uv](https://docs.astral.sh/uv/), and macOS or Linux. uv provides Python 3.9+ and Textual.
 
 ## Run
 
@@ -37,7 +44,8 @@ on `PATH` with a symlink: `ln -s "$PWD/devboard.py" ~/.local/bin/devboard`.
 | `r` | rescan now (it also rescans every 15s) |
 | `q` | quit |
 
-Editor is `$DEVBOARD_EDITOR`, else the first of `code`, `cursor`, `zed`, `open` it finds — a GUI
+Editor is `$DEVBOARD_EDITOR`, else the first of `code`, `cursor`, `zed` it finds, else `open`
+(`xdg-open` on Linux) — a GUI
 one, so opening a repo never fights the TUI for the terminal.
 
 ## Reading a row
@@ -59,3 +67,7 @@ terminal and you see further back. The header says how far (`175d → now`).
 Recent commits for the selected repo, and its uncommitted files when it has any — when it
 doesn't, the history runs on into the second column. The panel hides itself on a terminal too
 short to hold it and gives the space back to the board.
+
+## License
+
+[MIT](LICENSE)
