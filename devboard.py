@@ -99,11 +99,7 @@ def strip_width(days):
 
 def fit_days(width):
     """Widest whole WEEKS whose strip fits `width` — a ragged part-week reads as a glitch."""
-    days = min(MAX_DAYS, max(MIN_DAYS, width * 7 // 8))
-    days -= days % 7
-    while days > MIN_DAYS and strip_width(days) > width:
-        days -= 7
-    return max(MIN_DAYS, days)
+    return min(MAX_DAYS, max(MIN_DAYS, (width + 1) // 8 * 7))   # w weeks take 8w - 1 columns
 
 
 def commit_days(path, days=MAX_DAYS):
@@ -424,7 +420,8 @@ def selftest():
     assert len(heat_strip([1] * 14).plain) == strip_width(14) == 15      # 14 days + one week gap
     assert heat_strip([0] * 14).plain == IDLE * 7 + " " + IDLE * 7       # gap sits on the week line
     assert strip_width(0) == 0 and strip_width(7) == 7
-    assert strip_width(fit_days(40)) <= 40 and strip_width(fit_days(40) + 7) > 40   # widest that fits
+    assert all(strip_width(fit_days(w)) <= w and strip_width(fit_days(w) + 7) > w   # widest that fits
+               for w in range(MIN_DAYS, strip_width(MAX_DAYS)))
     assert fit_days(3) == MIN_DAYS and fit_days(1000) == MAX_DAYS        # clamped both ends
     assert all(fit_days(w) % 7 == 0 for w in range(1, 200))              # always whole weeks
     assert heat_strip([]).plain == ""
@@ -454,7 +451,7 @@ def smoke(size=(120, 40), timeout=30.0):
             assert app.rows, f"scan found no git repos under {ROOT} after {timeout:.0f}s"
             assert table.row_count == len(app.rows), "board did not finish revealing"
 
-            board = app.board_width(table)
+            board = min(MAX_W, table.scrollable_content_region.width)   # what refresh() measured: no scrollbar gutter
             want = app.lane_w + app.strip_w + FLAGS_W + AGE_W + GAP * (3 if app.strip_w else 2)
             for i in range(table.row_count):
                 got = len(table.get_row_at(i)[0].plain)

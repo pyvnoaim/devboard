@@ -10,3 +10,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: ./devboard.py --selftest
+      - run: ./devboard.py .. --smoke   # the checkout's parent: a folder holding one repo
