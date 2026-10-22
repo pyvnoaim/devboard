@@ -130,14 +130,29 @@ def git(path, *args):
     return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True).stdout.strip()
 
 
+def repos(root):
+    """Repos in root, plus repos one level down in plain folders (e.g. dev/org/repo)."""
+    # ponytail: one level deep only, recurse if someone nests deeper
+    for p in root.iterdir():
+        if not p.is_dir() or p.name.startswith("."):
+            continue
+        if (p / ".git").exists():
+            yield p
+        else:
+            try:
+                yield from (c for c in p.iterdir() if c.is_dir() and (c / ".git").exists())
+            except OSError:
+                pass
+
+
 def scan(root):
     rows = []
-    for d in sorted(p for p in root.iterdir() if (p / ".git").exists()):
+    for d in repos(root):
         counts = git(d, "rev-list", "--left-right", "--count", "@{u}...HEAD")
         behind, ahead = parse_counts(counts)
         ts = git(d, "log", "-1", "--format=%ct")
         rows.append({
-            "name": d.name, "path": d,
+            "name": str(d.relative_to(root)), "path": d,
             "branch": git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?",
             "dirty": len([l for l in git(d, "status", "--porcelain").splitlines() if l]),
             "behind": behind, "ahead": ahead, "upstream": bool(counts),
@@ -413,6 +428,13 @@ def selftest():
     assert fit_days(3) == MIN_DAYS and fit_days(1000) == MAX_DAYS        # clamped both ends
     assert all(fit_days(w) % 7 == 0 for w in range(1, 200))              # always whole weeks
     assert heat_strip([]).plain == ""
+    import tempfile
+    with tempfile.TemporaryDirectory() as t:
+        t = Path(t)
+        for d in ("a/.git", "org/b/.git", "org/notes", ".hidden/c/.git", "x/y/z/.git"):
+            (t / d).mkdir(parents=True)
+        (t / "file").touch()
+        assert sorted(str(p.relative_to(t)) for p in repos(t)) == ["a", "org/b"]   # one level, no dotdirs
     print("ok")
 
 
