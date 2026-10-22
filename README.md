@@ -44,11 +44,13 @@ one, so opening a repo never fights the TUI for the terminal.
 
 ## Reading a row
 
-- **Left bar** — the worst thing about the repo: red behind the remote, amber dirty, blue
+- **Left bar** — the worst thing about the repo: red behind the remote or CI failing, amber dirty, blue
   unpushed, grey nothing to answer for.
 - **Name** — dims as the repo goes quiet: bright under 2 days, then a week, a month, older.
 - **Badges** — only when something needs attention: `●3` uncommitted, `↑2` unpushed, `↓2`
-  behind, `local` no upstream. A clean synced repo says nothing.
+  behind, `✗ci` the branch's latest CI run failed, `local` no upstream. A clean synced repo
+  says nothing. The CI badge needs the [GitHub CLI](https://cli.github.com) logged in; without
+  it the badge just never shows. It checks every 2 minutes, not on every rescan.
 - **Strip** — one cell per day, grouped into weeks, today at the right edge. Brighter blue is
   more commits that day, scaled against that repo's own busiest day in view.
 - **Age** — time since the last commit.

@@ -4,8 +4,9 @@
 # dependencies = ["textual>=0.80"]
 # ///
 """devboard - what did I leave unfinished. A Textual dashboard for a folder of git repos."""
-import os, shutil, subprocess, sys, time
+import json, os, shutil, subprocess, sys, time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -37,6 +38,8 @@ FLAGS_W, AGE_W = 7, 5
 MAX_W, LOG_W = 300, 90
 REVEAL_STEP = 0.03   # seconds between rows during the staggered reveal
 RELOAD_EVERY = 15.0
+CI_EVERY = 120.0     # gh is a network call per repo; the git rescan is local and can run far more often
+CI_FAIL = {"failure", "timed_out", "startup_failure"}
 
 
 def parse_counts(out):
@@ -45,11 +48,25 @@ def parse_counts(out):
     return (int(parts[0]), int(parts[1])) if len(parts) == 2 else (0, 0)
 
 
-def fmt_flags(dirty, behind, ahead, has_upstream):
+def parse_ci(out):
+    """`gh run list --json workflowName,status,conclusion` -> did any workflow's latest finished run fail.
+       Per workflow, so a green deploy run can't hide a red ci run that landed just before it."""
+    seen = set()
+    for run in json.loads(out or "[]"):
+        if run["status"] != "completed" or run["workflowName"] in seen:
+            continue
+        seen.add(run["workflowName"])
+        if run["conclusion"] in CI_FAIL:
+            return True
+    return False
+
+
+def fmt_flags(dirty, behind, ahead, has_upstream, ci_failed=False):
     """Badges, and only badges. A repo with nothing wrong says nothing — the quiet is the signal."""
     t = Text()
     for text, style, on in ((f"●{dirty}", AMBER, dirty), (f"↑{ahead}", BLUE, ahead),
-                            (f"↓{behind}", RED, behind), ("local", DIM, not has_upstream)):
+                            (f"↓{behind}", RED, behind), ("✗ci", RED, ci_failed),
+                            ("local", DIM, not has_upstream)):
         if on:
             t.append(" " if t else "")
             t.append(text, style=style)
@@ -126,6 +143,27 @@ def git(path, *args):
     return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True).stdout.strip()
 
 
+_ci = {}   # (path, branch) -> (checked_at, failed)
+
+
+def ci_failed(path, branch):
+    """Latest CI on this branch failed. No gh, not logged in, not on GitHub: quietly False."""
+    hit = _ci.get((path, branch))
+    if hit and time.time() - hit[0] < CI_EVERY:
+        return hit[1]
+    failed = False
+    if shutil.which("gh") and branch != "HEAD":
+        try:
+            r = subprocess.run(["gh", "run", "list", "-L", "20", "-b", branch,
+                                "--json", "workflowName,status,conclusion"],
+                               cwd=path, capture_output=True, text=True, timeout=10)
+            failed = r.returncode == 0 and parse_ci(r.stdout)
+        except (subprocess.TimeoutExpired, ValueError, KeyError):
+            pass
+    _ci[(path, branch)] = (time.time(), failed)
+    return failed
+
+
 def repos(root):
     """Repos in root, plus repos one level down in plain folders (e.g. dev/org/repo)."""
     # ponytail: one level deep only, recurse if someone nests deeper
@@ -147,14 +185,19 @@ def scan(root):
         counts = git(d, "rev-list", "--left-right", "--count", "@{u}...HEAD")
         behind, ahead = parse_counts(counts)
         ts = git(d, "log", "-1", "--format=%ct")
+        branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?"
         rows.append({
-            "name": str(d.relative_to(root)), "path": d,
-            "branch": git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?",
+            "name": str(d.relative_to(root)), "path": d, "branch": branch,
             "dirty": len([l for l in git(d, "status", "--porcelain").splitlines() if l]),
             "behind": behind, "ahead": ahead, "upstream": bool(counts),
             "ts": int(ts) if ts.isdigit() else 0,
             "days": commit_days(d),
         })
+    # ~0.9s per gh call: 21 repos in series held the first board back 18s. In parallel it is the slowest one.
+    with ThreadPoolExecutor(16) as pool:
+        ci = pool.map(lambda r: r["upstream"] and ci_failed(r["path"], r["branch"]), rows)
+        for r, failed in zip(rows, ci):
+            r["ci"] = failed
     rows.sort(key=lambda r: r["ts"], reverse=True)
     return rows
 
@@ -334,13 +377,13 @@ class Devboard(App):
 
     def row_line(self, r) -> Text:
         # the bar carries the worst thing about the repo; colour is the whole status column
-        bar = RED if r["behind"] else AMBER if r["dirty"] else BLUE if r["ahead"] else GUTTER
+        bar = RED if r["behind"] or r["ci"] else AMBER if r["dirty"] else BLUE if r["ahead"] else GUTTER
         t = Text("▌ ", style=bar)
         t.append(r["name"], style=fade(r["ts"]))
         if r["branch"] not in ("main", "master"):   # naming "main" ten times says nothing
             t.append(f"  {r['branch']}", style=BLUE)
         t.append(" " * (self.lane_w - len(t.plain) + GAP))
-        flags = fmt_flags(r["dirty"], r["behind"], r["ahead"], r["upstream"])
+        flags = fmt_flags(r["dirty"], r["behind"], r["ahead"], r["upstream"], r["ci"])
         flags.truncate(FLAGS_W)
         t.append_text(flags); t.append(" " * (FLAGS_W - len(flags.plain) + GAP))
         if self.strip_w:
@@ -374,9 +417,11 @@ class Devboard(App):
             self.show_detail()
         dirty = sum(1 for r in self.rows if r["dirty"])
         unpushed = sum(1 for r in self.rows if r["ahead"])
+        failing = sum(1 for r in self.rows if r["ci"])
         status = Text(short(ROOT), style=DIM)
         for text, style, on in ((f"{len(self.rows)} repos", DIM, True), (f"{dirty} dirty", AMBER, dirty),
-                                (f"{unpushed} unpushed", BLUE, unpushed)):
+                                (f"{unpushed} unpushed", BLUE, unpushed),
+                                (f"{failing} ci failing", RED, failing)):
             if on:
                 status.append("  ·  ", style=GUTTER); status.append(text, style=style)
         status.append(f"  ·  {self.days}d → now", style=GUTTER)   # the strip has no column header
@@ -400,6 +445,14 @@ def selftest():
     assert fmt_flags(0, 0, 0, True).plain == ""          # a clean synced repo says nothing
     assert fmt_flags(0, 0, 0, False).plain == "local"
     assert fmt_flags(3, 4, 2, True).plain == "●3 ↑2 ↓4"  # dirty, then ahead, then behind
+    assert fmt_flags(1, 0, 0, True, True).plain == "●1 ✗ci"
+    run = lambda w, c, s="completed": {"workflowName": w, "status": s, "conclusion": c}
+    assert parse_ci("") is False and parse_ci("[]") is False
+    assert parse_ci(json.dumps([run("ci", "failure")])) is True
+    assert parse_ci(json.dumps([run("ci", "success"), run("ci", "failure")])) is False  # newest wins
+    assert parse_ci(json.dumps([run("pages", "success"), run("ci", "failure")])) is True  # per workflow
+    assert parse_ci(json.dumps([run("ci", "", "in_progress"), run("ci", "failure")])) is True  # last finished
+    assert parse_ci(json.dumps([run("ci", "cancelled")])) is False
     assert fmt_age(0) == "—"                     # ts 0 is the "no commits" sentinel, not the epoch
     assert fmt_age(1, now=1) == "0s"
     assert fmt_age(1, now=1 + 21 * 3600) == "21h"
