@@ -32,7 +32,7 @@ HEAT = ["#2b3039", "#31455f", "#3d5f8f", "#4f7bc4", "#6b8cff"]   # [0] = a silen
 CELL, IDLE = "▪", "·"
 MAX_DAYS, MIN_DAYS = 364, 7  # the strip shows as much history as the window is wide, up to a year
 GAP = 2              # space between the board's columns
-FLAGS_W, AGE_W = 7, 5
+FLAGS_W, AGE_W = 7, 5   # FLAGS_W is the floor; the column grows to the longest row's badges
 # The strip absorbs the width, so the board can span the terminal without opening a canyon
 # between the columns. MAX_W is only a sanity stop for absurdly wide windows.
 MAX_W, LOG_W = 300, 90
@@ -371,9 +371,14 @@ class Devboard(App):
            and the board then shrinks to that, so no slack opens up between the columns."""
         lane = 2 + max(len(r["name"]) + (0 if r["branch"] in ("main", "master") else len(r["branch"]) + 2)
                        for r in self.rows)
-        room = max(0, width - lane - FLAGS_W - AGE_W - 3 * GAP)
+        flags = max([FLAGS_W] + [len(self.flags(r).plain) for r in self.rows])
+        room = max(0, width - lane - flags - AGE_W - 3 * GAP)
         days = fit_days(room)
-        return lane, (strip_width(days) if room >= MIN_DAYS else 0), days
+        return lane, flags, (strip_width(days) if room >= MIN_DAYS else 0), days
+
+    @staticmethod
+    def flags(r) -> Text:
+        return fmt_flags(r["dirty"], r["behind"], r["ahead"], r["upstream"], r["ci"])
 
     def row_line(self, r) -> Text:
         # the bar carries the worst thing about the repo; colour is the whole status column
@@ -383,9 +388,8 @@ class Devboard(App):
         if r["branch"] not in ("main", "master"):   # naming "main" ten times says nothing
             t.append(f"  {r['branch']}", style=BLUE)
         t.append(" " * (self.lane_w - len(t.plain) + GAP))
-        flags = fmt_flags(r["dirty"], r["behind"], r["ahead"], r["upstream"], r["ci"])
-        flags.truncate(FLAGS_W)
-        t.append_text(flags); t.append(" " * (FLAGS_W - len(flags.plain) + GAP))
+        flags = self.flags(r)
+        t.append_text(flags); t.append(" " * (self.flags_w - len(flags.plain) + GAP))
         if self.strip_w:
             strip = heat_strip(r["days"][-self.days:])
             t.append(" " * (self.strip_w - len(strip.plain)))   # today hugs the right edge
@@ -401,7 +405,7 @@ class Devboard(App):
         table.clear()
         if not self.rows:
             return
-        self.lane_w, self.strip_w, self.days = self.measure(
+        self.lane_w, self.flags_w, self.strip_w, self.days = self.measure(
             min(MAX_W, table.scrollable_content_region.width or self.size.width - 4))
         # the list keeps only the height it uses, so the detail pane sits right under it
         space = self.size.height - 5 - (self.detail_rows() + 3 if self.detail_rows() >= 2 else 0)
@@ -505,7 +509,7 @@ def smoke(size=(120, 40), timeout=30.0):
             assert table.row_count == len(app.rows), "board did not finish revealing"
 
             board = min(MAX_W, table.scrollable_content_region.width)   # what refresh() measured: no scrollbar gutter
-            want = app.lane_w + app.strip_w + FLAGS_W + AGE_W + GAP * (3 if app.strip_w else 2)
+            want = app.lane_w + app.strip_w + app.flags_w + AGE_W + GAP * (3 if app.strip_w else 2)
             for i in range(table.row_count):
                 got = len(table.get_row_at(i)[0].plain)
                 assert got == want, f"row {i} renders {got} wide, the layout says {want}"
