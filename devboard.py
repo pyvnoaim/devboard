@@ -4,7 +4,7 @@
 # dependencies = ["textual>=0.80"]
 # ///
 """devboard - what did I leave unfinished. A Textual dashboard for a folder of git repos."""
-import json, os, shutil, subprocess, sys, time
+import itertools, json, os, shutil, subprocess, sys, time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
@@ -36,6 +36,7 @@ FLAGS_W, AGE_W = 7, 5   # FLAGS_W is the floor; the column grows to the longest 
 # The strip absorbs the width, so the board can span the terminal without opening a canyon
 # between the columns. MAX_W is only a sanity stop for absurdly wide windows.
 MAX_W, LOG_W = 300, 90
+SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 REVEAL_STEP = 0.03   # seconds between rows during the staggered reveal
 RELOAD_EVERY = 15.0
 CI_EVERY = 120.0     # gh is a network call per repo; the git rescan is local and can run far more often
@@ -179,25 +180,26 @@ def repos(root):
                 pass
 
 
+def scan_one(root, d):
+    counts = git(d, "rev-list", "--left-right", "--count", "@{u}...HEAD")
+    behind, ahead = parse_counts(counts)
+    ts = git(d, "log", "-1", "--format=%ct")
+    branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?"
+    return {
+        "name": str(d.relative_to(root)), "path": d, "branch": branch,
+        "dirty": len([l for l in git(d, "status", "--porcelain").splitlines() if l]),
+        "behind": behind, "ahead": ahead, "upstream": bool(counts),
+        "ts": int(ts) if ts.isdigit() else 0,
+        "days": commit_days(d),
+        "ci": bool(counts) and ci_failed(d, branch),
+    }
+
+
 def scan(root):
-    rows = []
-    for d in repos(root):
-        counts = git(d, "rev-list", "--left-right", "--count", "@{u}...HEAD")
-        behind, ahead = parse_counts(counts)
-        ts = git(d, "log", "-1", "--format=%ct")
-        branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?"
-        rows.append({
-            "name": str(d.relative_to(root)), "path": d, "branch": branch,
-            "dirty": len([l for l in git(d, "status", "--porcelain").splitlines() if l]),
-            "behind": behind, "ahead": ahead, "upstream": bool(counts),
-            "ts": int(ts) if ts.isdigit() else 0,
-            "days": commit_days(d),
-        })
-    # ~0.9s per gh call: 21 repos in series held the first board back 18s. In parallel it is the slowest one.
+    # ~0.9s per gh call, plus ~70ms of git per repo: in series 21 repos took 18s. In parallel
+    # the board waits on the slowest single repo.
     with ThreadPoolExecutor(16) as pool:
-        ci = pool.map(lambda r: r["upstream"] and ci_failed(r["path"], r["branch"]), rows)
-        for r, failed in zip(rows, ci):
-            r["ci"] = failed
+        rows = list(pool.map(lambda d: scan_one(root, d), repos(root)))
     rows.sort(key=lambda r: r["ts"], reverse=True)
     return rows
 
@@ -249,12 +251,17 @@ class Devboard(App):
     def on_mount(self) -> None:
         self.query_one(DataTable).add_column("board")
         self.rows, self.queue, self.reveal, self.days, self.keep = [], [], None, MIN_DAYS, 0
+        self.spin = None
         # auto-reload updates in place; only mount and an explicit `r` replay the reveal
         self.set_interval(RELOAD_EVERY, lambda: self.load_rows(animate=False))
         self.action_reload()
 
     def action_reload(self) -> None:
-        self.head(Text(f"scanning {short(ROOT)} …", style=DIM))
+        if self.spin is None:
+            frames = itertools.cycle(SPIN)
+            tick = lambda: self.head(Text(f"{next(frames)} scanning {short(ROOT)}", style=DIM))
+            tick()
+            self.spin = self.set_interval(0.08, tick)
         self.load_rows()
 
     def on_resize(self) -> None:
@@ -439,6 +446,8 @@ class Devboard(App):
         self.call_from_thread(self.apply_rows, rows, animate)
 
     def apply_rows(self, rows, animate: bool) -> None:
+        if self.spin is not None:
+            self.spin.stop(); self.spin = None
         self.keep = self.query_one(DataTable).cursor_row   # a reload must not yank the cursor to row 0
         self.rows = rows
         self.fill(animate)
@@ -502,11 +511,14 @@ def smoke(size=(120, 40), timeout=30.0):
         app = Devboard()
         async with app.run_test(size=size) as pilot:
             table = app.query_one(DataTable)
+            head = lambda: app.query_one("#head", Static).render().plain
+            assert "scanning" in head() and head()[head().index("scanning") - 2] in SPIN, "no spinner while scanning"
             deadline = time.time() + timeout      # scan() is a thread worker, and git scales with repos
             while time.time() < deadline and (not app.rows or table.row_count < len(app.rows)):
                 await pilot.pause(); await asyncio.sleep(0.05)
             assert app.rows, f"scan found no git repos under {ROOT} after {timeout:.0f}s"
             assert table.row_count == len(app.rows), "board did not finish revealing"
+            assert app.spin is None and "scanning" not in head(), "spinner outlived the scan"
 
             board = min(MAX_W, table.scrollable_content_region.width)   # what refresh() measured: no scrollbar gutter
             want = app.lane_w + app.strip_w + app.flags_w + AGE_W + GAP * (3 if app.strip_w else 2)
