@@ -19,7 +19,10 @@ from textual.widgets import DataTable, Static
 VERSION = "v0.1.0"
 ROOT = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else Path.home() / "dev"
 
-DIM, FG, BLUE, AMBER, RED = "#6b7280", "#c9d1d9", "#6b8cff", "#e3b341", "#f85149"
+# Text runs in four tiers, loudest first. Chrome (labels, keys, axis) sits at SUBTLE: quiet,
+# but never below what a laptop panel at half brightness can still read.
+TEXT, FG, DIM, SUBTLE, FAINT = "#e6edf3", "#c9d1d9", "#8b949e", "#626b77", "#3a404a"
+BLUE, CYAN, AMBER, RED, GREEN = "#6b8cff", "#56c2d6", "#e3b341", "#f85149", "#3fb950"
 
 # A repo's name dims as it goes quiet, so the board reads as a decay gradient top to bottom.
 # Thresholds in days; last entry is the floor for anything older.
@@ -66,7 +69,7 @@ def fmt_flags(dirty, behind, ahead, has_upstream, ci_failed=False):
     """Badges, and only badges. A repo with nothing wrong says nothing — the quiet is the signal."""
     t = Text()
     for text, style, on in ((f"●{dirty}", AMBER, dirty), (f"↑{ahead}", BLUE, ahead),
-                            (f"↓{behind}", RED, behind), ("✗ci", RED, ci_failed),
+                            (f"↓{behind}", CYAN, behind), ("✗ci", RED, ci_failed),
                             ("local", DIM, not has_upstream)):
         if on:
             t.append(" " if t else "")
@@ -109,6 +112,23 @@ def heat_strip(counts):
             t.append(" ")
         t.append(CELL if c else IDLE, style=HEAT[heat_index(c, hi)] if c else HEAT[0])
     return t
+
+
+def month_axis(n, today=None):
+    """Month names over an n-day strip, each sitting on the column of its month's 1st.
+       Mirrors heat_strip's week gaps, so the label lands on the very cell it names."""
+    today = today or date.today()
+    out, col, free = [" "] * strip_width(n), 0, 0
+    for i in range(n):
+        if i and (n - i) % 7 == 0:
+            col += 1
+        day = today - timedelta(days=n - 1 - i)
+        name = day.strftime("%b")
+        if day.day == 1 and col >= free and col + len(name) <= len(out):
+            out[col:col + len(name)] = name
+            free = col + len(name) + 1
+        col += 1
+    return "".join(out)
 
 
 def strip_width(days):
@@ -185,10 +205,11 @@ def scan_one(root, d):
     behind, ahead = parse_counts(counts)
     ts = git(d, "log", "-1", "--format=%ct")
     branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?"
+    upstream = git(d, "rev-parse", "--abbrev-ref", "@{u}") if counts else ""
     return {
         "name": str(d.relative_to(root)), "path": d, "branch": branch,
         "dirty": len([l for l in git(d, "status", "--porcelain").splitlines() if l]),
-        "behind": behind, "ahead": ahead, "upstream": bool(counts),
+        "behind": behind, "ahead": ahead, "upstream": upstream or bool(counts),
         "ts": int(ts) if ts.isdigit() else 0,
         "days": commit_days(d),
         "ci": bool(counts) and ci_failed(d, branch),
@@ -208,11 +229,13 @@ class Devboard(App):
     CSS = """
     Screen { background: #1a1d23; }
     #body { width: 100%; height: 100%; background: #1a1d23; }
-    #head { width: 100%; padding: 1 2 0 2; border-bottom: solid #22262e; }
+    #head { width: 100%; padding: 1 2; border-bottom: solid #22262e; }
+    /* the board's column header; the strip's slot carries month names, making it a timeline */
+    #cols { width: 100%; padding: 1 2 0 2; }
     /* one column, sized to a line this builds itself: the table does no layout, so the
        strip can be told exactly how much room is left over */
     DataTable {
-        width: 100%; height: auto; padding: 1 2 0 2;
+        width: 100%; height: auto; padding: 0 2 1 2;
         background: transparent; color: #c9d1d9; border: none;
         /* stable, or the scrollbar appearing steals a column mid-render and the line I built
            to exactly fill the width wraps */
@@ -220,7 +243,7 @@ class Devboard(App):
     }
     /* background only: setting a colour here would override each cell's own style and
        flatten the heat strip on the selected row */
-    DataTable > .datatable--cursor { background: #252b35; text-style: none; }
+    DataTable > .datatable--cursor { background: #232a36; text-style: none; }
     DataTable > .datatable--hover { background: transparent; }
     /* stretched and tinted: the leftover height reads as the lower panel, not as a gap */
     #detail { width: 100%; height: 1fr; padding: 1 2 0 2;
@@ -235,11 +258,12 @@ class Devboard(App):
 
     def compose(self) -> ComposeResult:
         keys = Text()
-        for k, label in (("↑↓", "select"), ("enter/o", "editor"), ("r", "reload"), ("q", "quit")):
-            keys.append("   " if keys.plain else "", style=DIM)
-            keys.append(f"{k}", style=DIM); keys.append(f" {label}", style=GUTTER)
+        for k, label in (("↑↓", "select"), ("enter", "open in editor"), ("r", "reload"), ("q", "quit")):
+            keys.append("    " if keys.plain else "")
+            keys.append(f" {k} ", style=f"{FG} on #2a303a"); keys.append(f" {label}", style=SUBTLE)
         with Vertical(id="body"):
             yield Static("", id="head")
+            yield Static("", id="cols")
             # cursor_foreground_priority defaults to "css", which paints the cursor's
             # foreground over the cell's own colours and flattens the heat strip
             yield DataTable(id="t", cursor_type="row", zebra_stripes=False, show_cursor=True,
@@ -272,15 +296,19 @@ class Devboard(App):
     def board_width(self, widget) -> int:
         return min(MAX_W, widget.content_size.width or self.size.width - 4)
 
+    # head 4 + column header 2 + keys 2; the detail card adds border, padding and 4 lines of
+    # its own heading before the first commit row
+    CHROME, CARD = 8, 6
+
     def detail_rows(self) -> int:
-        """Whatever is left after the header, the board and the two chrome bars. The panel
+        """Whatever is left after the chrome and the board (+1: its bottom padding). The panel
            fills itself with history rather than leaving tinted emptiness."""
-        return self.size.height - len(self.rows) - 9
+        return self.size.height - self.CHROME - len(self.rows) - 1 - self.CARD
 
     def head(self, status: Text) -> None:
         """Brand hard left, status hard right, on one line as wide as the board."""
         t = Text("▌ ", style=BLUE)
-        t.append("devboard", style=f"bold {FG}"); t.append(f" {VERSION}", style=GUTTER)
+        t.append("devboard", style=f"bold {TEXT}"); t.append(f"  {VERSION}", style=FAINT)
         width = self.board_width(self.query_one("#head"))
         t.append(" " * max(1, width - len(t.plain) - len(status.plain))); t.append_text(status)
         t.truncate(width)            # a narrow terminal drops the status rather than wrapping
@@ -314,8 +342,8 @@ class Devboard(App):
             self.show_detail(event.cursor_row)
 
     def show_detail(self, index=None) -> None:
-        """The dead space under a short list, spent on the two things the row can't show:
-           what is uncommitted here, and what the last commits were."""
+        """The dead space under a short list, spent on what the row can only hint at: the
+           repo's sync state in words, what is uncommitted here, and what the last commits were."""
         panel = self.query_one("#detail", Static)
         table = self.query_one(DataTable)
         index = table.cursor_row if index is None else index
@@ -326,7 +354,7 @@ class Devboard(App):
         panel.display = n >= 2       # a short terminal gives the space back to the board
         if not panel.display:
             return
-        width = self.board_width(panel)
+        width = self.board_width(panel) - 2          # indented under the title, past the bar
         log_w = min(LOG_W, (width - GAP * 2) // 2)
         # ponytail: two git calls per cursor move, measured 10-40ms on this ~/dev. Move them to
         # an exclusive thread worker if a repo ever makes scrolling the board stutter.
@@ -334,35 +362,64 @@ class Devboard(App):
         # a clean repo has no second column, so the history runs on into it rather than
         # leaving half the panel blank
         log = git(r["path"], "log", f"-{n if files else n * 2}", "--abbrev=7",
-                  "--format=%h\x1f%s").splitlines()
+                  "--format=%h\x1f%s\x1f%ct").splitlines()
         right_w = log_w if not files else width - GAP * 2 - log_w
 
         head = Text("▌ ", style=BLUE)
-        head.append(short(r["path"]), style=f"bold {FG}")
-        head.append(f"  {r['branch']}", style=DIM)
-        labels = Text("recent", style=GUTTER)
+        head.append(short(r["path"]), style=f"bold {TEXT}")
+        head.append(f"   {r['branch']}", style=DIM if r["branch"] in ("main", "master") else BLUE)
+        if isinstance(r["upstream"], str):
+            head.append(f" → {r['upstream']}", style=SUBTLE)
+
+        # every badge from the row, said in words
+        recent = sum(r["days"][-self.days:])
+        facts = Text("  ")
+        for text, style, on in (
+                (f"{r['dirty']} uncommitted", AMBER, r["dirty"]),
+                ("working tree clean", SUBTLE, not r["dirty"]),
+                (f"{r['ahead']} to push", BLUE, r["ahead"]),
+                (f"{r['behind']} to pull", CYAN, r["behind"]),
+                ("no upstream", DIM, not r["upstream"]),
+                ("ci failing", RED, r["ci"]),
+                (f"{recent} commit{'s' * (recent != 1)} in {self.days}d", SUBTLE, True),
+                (f"last {fmt_age(r['ts'])} ago", SUBTLE, r["ts"])):
+            if on:
+                facts.append("   ·   " if len(facts) > 2 else "", style=FAINT)
+                facts.append(text, style=style)
+
+        def label(text, count=None):
+            t = Text(text, style=f"bold {SUBTLE}")
+            if count is not None:
+                t.append(f"  {count}", style=FAINT)
+            return t
+
+        labels = Text("  "); labels.append_text(label("RECENT COMMITS"))
         if files:
-            labels.truncate(log_w + GAP * 2, pad=True)
-            labels.append(f"uncommitted {len(files)}", style=GUTTER)
-        else:      # no second column to head, so the note goes up top instead of floating alone
-            head.append("   working tree clean", style=GUTTER)
+            labels.truncate(2 + log_w + GAP * 2, pad=True)
+            labels.append_text(label("WORKING TREE", len(files)))
+
         def commit(i, w):
             t = Text()
             if i < len(log):
-                sha, _, subject = log[i].partition("\x1f")
+                sha, _, rest = log[i].partition("\x1f")
+                subject, _, ts = rest.rpartition("\x1f")
+                age = fmt_age(int(ts)) if ts.isdigit() else ""
                 t.append(f"{sha}  ", style=HEAT[3])
-                t.append(subject, style="#5f6773")   # the board stays the loudest thing on screen
-            t.truncate(w, overflow="ellipsis")
+                body = Text(subject, style=FG if i == 0 else DIM)
+                body.truncate(max(0, w - len(t.plain) - AGE_W - 1), overflow="ellipsis", pad=True)
+                t.append_text(body); t.append(age.rjust(AGE_W + 1), style=SUBTLE)
+            t.truncate(w, pad=True)
             return t
 
-        body = [head, labels]
+        tree = {"M": AMBER, "A": GREEN, "D": RED, "R": BLUE, "?": SUBTLE}
+        body = [head, facts, Text(), labels]
         for i in range(n):
-            line = commit(i, log_w)
-            line.truncate(log_w, pad=True)
+            line = Text("  ")
+            line.append_text(commit(i, log_w))
             line.append(" " * GAP * 2)
             if files and i < len(files):
                 code, _, name = files[i].strip().partition(" ")
-                line.append(f"{code:<3}", style=DIM if code == "??" else AMBER)   # red stays for sync trouble
+                line.append(f"{code:<3}", style=tree.get(code[:1], DIM))
                 right = Text(name.strip(), style=DIM)
                 right.truncate(max(0, right_w - 3), overflow="ellipsis")
                 line.append_text(right)
@@ -370,7 +427,7 @@ class Devboard(App):
                 line.append_text(commit(n + i, right_w))
             body.append(line)
         for line in body:
-            line.truncate(width)     # nothing here may wrap; the pane's height is fixed
+            line.truncate(width + 2)     # nothing here may wrap; the pane's height is fixed
         panel.update(Text("\n").join(body))
 
     def measure(self, width):
@@ -389,9 +446,12 @@ class Devboard(App):
 
     def row_line(self, r) -> Text:
         # the bar carries the worst thing about the repo; colour is the whole status column
-        bar = RED if r["behind"] or r["ci"] else AMBER if r["dirty"] else BLUE if r["ahead"] else GUTTER
+        bar = RED if r["ci"] else CYAN if r["behind"] else AMBER if r["dirty"] else BLUE if r["ahead"] else GUTTER
         t = Text("▌ ", style=bar)
-        t.append(r["name"], style=fade(r["ts"]))
+        org, _, leaf = r["name"].rpartition("/")
+        if org:                                      # the group recedes; the repo is the name
+            t.append(f"{org}/", style=FAINT if fade(r["ts"]) == FADE[-1][1] else SUBTLE)
+        t.append(leaf, style=fade(r["ts"]))
         if r["branch"] not in ("main", "master"):   # naming "main" ten times says nothing
             t.append(f"  {r['branch']}", style=BLUE)
         t.append(" " * (self.lane_w - len(t.plain) + GAP))
@@ -415,8 +475,8 @@ class Devboard(App):
         self.lane_w, self.flags_w, self.strip_w, self.days = self.measure(
             min(MAX_W, table.scrollable_content_region.width or self.size.width - 4))
         # the list keeps only the height it uses, so the detail pane sits right under it
-        space = self.size.height - 5 - (self.detail_rows() + 3 if self.detail_rows() >= 2 else 0)
-        table.styles.height = max(3, min(len(self.rows) + 1, space))   # +1 for its own top padding
+        table.styles.height = max(3, min(len(self.rows) + 1, self.size.height - self.CHROME))
+        self.query_one("#cols", Static).update(self.column_header())
         if animate:
             self.queue = list(self.rows)
             self.reveal = self.set_interval(REVEAL_STEP, self.reveal_one)
@@ -426,17 +486,28 @@ class Devboard(App):
             if 0 < self.keep < len(self.rows):
                 table.move_cursor(row=self.keep)
             self.show_detail()
-        dirty = sum(1 for r in self.rows if r["dirty"])
-        unpushed = sum(1 for r in self.rows if r["ahead"])
-        failing = sum(1 for r in self.rows if r["ci"])
         status = Text(short(ROOT), style=DIM)
-        for text, style, on in ((f"{len(self.rows)} repos", DIM, True), (f"{dirty} dirty", AMBER, dirty),
-                                (f"{unpushed} unpushed", BLUE, unpushed),
-                                (f"{failing} ci failing", RED, failing)):
-            if on:
-                status.append("  ·  ", style=GUTTER); status.append(text, style=style)
-        status.append(f"  ·  {self.days}d → now", style=GUTTER)   # the strip has no column header
+        # count bright, word quiet: the eye lands on the numbers first
+        for key, word, style in (("dirty", "dirty", AMBER), ("ahead", "unpushed", BLUE),
+                                 ("behind", "behind", CYAN), ("ci", "ci failing", RED)):
+            count = sum(1 for r in self.rows if r[key])
+            if count:
+                status.append("     "); status.append(str(count), style=f"bold {style}")
+                status.append(f" {word}", style=SUBTLE)
+        status.append("     "); status.append(str(len(self.rows)), style=f"bold {FG}")
+        status.append(" repos", style=SUBTLE)
         self.head(status)
+
+    def column_header(self) -> Text:
+        """Labels over lane and badges, month names over the strip, so it reads as a timeline."""
+        t = Text(" " * 2)
+        t.append("REPOSITORY".ljust(self.lane_w - 2 + GAP), style=f"bold {SUBTLE}")
+        t.append("STATUS".ljust(self.flags_w + GAP), style=f"bold {SUBTLE}")
+        if self.strip_w:
+            axis = month_axis(self.days)
+            t.append(axis.rjust(self.strip_w) + " " * GAP, style=SUBTLE)
+        t.append("LAST".rjust(AGE_W), style=f"bold {SUBTLE}")
+        return t
 
     @work(thread=True, exclusive=True)
     def load_rows(self, animate: bool = True) -> None:
@@ -491,6 +562,9 @@ def selftest():
     assert fit_days(3) == MIN_DAYS and fit_days(1000) == MAX_DAYS        # clamped both ends
     assert all(fit_days(w) % 7 == 0 for w in range(1, 200))              # always whole weeks
     assert heat_strip([]).plain == ""
+    axis = month_axis(14, today=date(2026, 3, 4))   # strip runs Feb 19 .. Mar 4, Mar 1 is day 10
+    assert len(axis) == strip_width(14) and axis.index("Mar") == 11   # day 10 + one week gap
+    assert month_axis(14, today=date(2026, 3, 1)).strip() == ""      # no room: Mar 1 is the last cell
     import tempfile
     with tempfile.TemporaryDirectory() as t:
         t = Path(t)
