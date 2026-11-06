@@ -209,7 +209,7 @@ def scan_one(root, d):
     return {
         "name": str(d.relative_to(root)), "path": d, "branch": branch,
         "dirty": len([l for l in git(d, "status", "--porcelain").splitlines() if l]),
-        "behind": behind, "ahead": ahead, "upstream": upstream or bool(counts),
+        "behind": behind, "ahead": ahead, "upstream": upstream,
         "ts": int(ts) if ts.isdigit() else 0,
         "days": commit_days(d),
         "ci": bool(counts) and ci_failed(d, branch),
@@ -231,7 +231,7 @@ class Devboard(App):
     #body { width: 100%; height: 100%; background: #1a1d23; }
     #head { width: 100%; padding: 1 2; border-bottom: solid #22262e; }
     /* the board's column header; the strip's slot carries month names, making it a timeline */
-    #cols { width: 100%; padding: 1 2 0 2; }
+    #cols { width: 100%; padding: 1 2 0 2; text-wrap: nowrap; text-overflow: clip; }
     /* one column, sized to a line this builds itself: the table does no layout, so the
        strip can be told exactly how much room is left over */
     DataTable {
@@ -258,7 +258,7 @@ class Devboard(App):
 
     def compose(self) -> ComposeResult:
         keys = Text()
-        for k, label in (("↑↓", "select"), ("enter", "open in editor"), ("r", "reload"), ("q", "quit")):
+        for k, label in (("↑↓", "select"), ("enter/o", "open in editor"), ("r", "reload"), ("q", "quit")):
             keys.append("    " if keys.plain else "")
             keys.append(f" {k} ", style=f"{FG} on #2a303a"); keys.append(f" {label}", style=SUBTLE)
         with Vertical(id="body"):
@@ -368,7 +368,7 @@ class Devboard(App):
         head = Text("▌ ", style=BLUE)
         head.append(short(r["path"]), style=f"bold {TEXT}")
         head.append(f"   {r['branch']}", style=DIM if r["branch"] in ("main", "master") else BLUE)
-        if isinstance(r["upstream"], str):
+        if r["upstream"]:
             head.append(f" → {r['upstream']}", style=SUBTLE)
 
         # every badge from the row, said in words
@@ -419,7 +419,8 @@ class Devboard(App):
             line.append(" " * GAP * 2)
             if files and i < len(files):
                 code, _, name = files[i].strip().partition(" ")
-                line.append(f"{code:<3}", style=tree.get(code[:1], DIM))
+                conflict = "U" in code or code in ("AA", "DD")   # mid-merge: the loudest state here
+                line.append(f"{code:<3}", style=RED if conflict else tree.get(code[:1], DIM))
                 right = Text(name.strip(), style=DIM)
                 right.truncate(max(0, right_w - 3), overflow="ellipsis")
                 line.append_text(right)
@@ -501,10 +502,13 @@ class Devboard(App):
     def column_header(self) -> Text:
         """Labels over lane and badges, month names over the strip, so it reads as a timeline."""
         t = Text(" " * 2)
-        t.append("REPOSITORY".ljust(self.lane_w - 2 + GAP), style=f"bold {SUBTLE}")
+        lane = self.lane_w - 2               # a board of short names gets a clipped label, not a shifted axis
+        t.append("REPOSITORY"[:lane].ljust(lane + GAP), style=f"bold {SUBTLE}")
         t.append("STATUS".ljust(self.flags_w + GAP), style=f"bold {SUBTLE}")
         if self.strip_w:
             axis = month_axis(self.days)
+            if not axis.strip():             # no 1st of a month in view: say the span instead
+                axis = f"{self.days}d".ljust(self.strip_w)
             t.append(axis.rjust(self.strip_w) + " " * GAP, style=SUBTLE)
         t.append("LAST".rjust(AGE_W), style=f"bold {SUBTLE}")
         return t
@@ -599,6 +603,8 @@ def smoke(size=(120, 40), timeout=30.0):
             for i in range(table.row_count):
                 got = len(table.get_row_at(i)[0].plain)
                 assert got == want, f"row {i} renders {got} wide, the layout says {want}"
+            got = len(app.column_header().plain)     # off by any amount, the months sit over the wrong weeks
+            assert got == want, f"column header renders {got} wide, the rows {want}"
             assert want <= board, f"the board overflows its {board} columns"
             assert board - want < 8, f"{board - want} columns of slack: the strip stopped filling"
 
