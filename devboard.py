@@ -31,7 +31,7 @@ GUTTER = "#343a44"   # the left bar on a repo with nothing to answer for
 
 # A one-line-tall cell has no room for bar HEIGHT: partial blocks bottom-align and smear
 # into neighbouring rows. Encode magnitude as colour intensity on a fixed glyph instead.
-HEAT = ["#2b3039", "#31455f", "#3d5f8f", "#4f7bc4", "#6b8cff"]   # [0] = a silent day, must survive the cursor row
+HEAT = ["#2b3039", "#3b5683", "#4c6fb0", "#5f84de", "#8aa4ff"]   # [0] = a silent day, must survive the cursor row
 CELL, IDLE = "▪", "·"
 MAX_DAYS, MIN_DAYS = 364, 7  # the strip shows as much history as the window is wide, up to a year
 GAP = 2              # space between the board's columns
@@ -44,6 +44,14 @@ REVEAL_STEP = 0.03   # seconds between rows during the staggered reveal
 RELOAD_EVERY = 15.0
 CI_EVERY = 120.0     # gh is a network call per repo; the git rescan is local and can run far more often
 CI_FAIL = {"failure", "timed_out", "startup_failure"}
+QUIET_BRANCHES = ("main", "master")        # naming these on every row says nothing
+NOT_BRANCHES = ("detached", "no commits")  # states, shown dim, never in branch blue
+DETAIL_MIN = 8       # commit lines the lower panel keeps; a long board scrolls rather than hide it
+BOARD_MIN = 6        # below this the board wins and the panel hides
+
+
+def branch_style(branch):
+    return DIM if branch in QUIET_BRANCHES or branch in NOT_BRANCHES else BLUE
 
 
 def parse_counts(out):
@@ -65,15 +73,33 @@ def parse_ci(out):
     return False
 
 
-def fmt_flags(dirty, behind, ahead, has_upstream, ci_failed=False):
-    """Badges, and only badges. A repo with nothing wrong says nothing — the quiet is the signal."""
+def badges(dirty, behind, ahead, has_upstream, ci_failed=False):
+    """Three slots: the working tree, sync with the remote, CI. Each a list of (text, style),
+       empty when the repo has nothing to say. ↑, ↓ and "local" share the sync slot: a repo
+       with no upstream can't be ahead of it or behind it."""
+    sync = [(f"↑{ahead}", BLUE)] * bool(ahead) + [(f"↓{behind}", CYAN)] * bool(behind)
+    sync += [("local", DIM)] * (not has_upstream)
+    return [[(f"●{dirty}", AMBER)] * bool(dirty), sync, [("✗ci", RED)] * bool(ci_failed)]
+
+
+def slot_len(slot):
+    return sum(len(text) for text, _ in slot)
+
+
+def fmt_flags(dirty, behind, ahead, has_upstream, ci_failed=False, widths=None):
+    """Badges, and only badges. A repo with nothing wrong says nothing — the quiet is the signal.
+       With `widths` (one per slot) each slot keeps its own column down the board, so the eye
+       runs straight down the ●s instead of hunting for them along each row."""
     t = Text()
-    for text, style, on in ((f"●{dirty}", AMBER, dirty), (f"↑{ahead}", BLUE, ahead),
-                            (f"↓{behind}", CYAN, behind), ("✗ci", RED, ci_failed),
-                            ("local", DIM, not has_upstream)):
-        if on:
-            t.append(" " if t else "")
-            t.append(text, style=style)
+    for i, slot in enumerate(badges(dirty, behind, ahead, has_upstream, ci_failed)):
+        if widths is None:
+            for text, style in slot:
+                t.append(" " if t.plain else ""); t.append(text, style=style)
+        elif widths[i]:
+            t.append(" " if t.plain else "")
+            for text, style in slot:
+                t.append(text, style=style)
+            t.append(" " * (widths[i] - slot_len(slot)))
     return t
 
 
@@ -104,13 +130,19 @@ def heat_index(c, hi):
 
 
 def heat_strip(counts):
-    """Weeks separated by a gap, so the strip reads as a calendar rather than a bar of noise."""
+    """Weeks separated by a gap, so the strip reads as a calendar rather than a bar of noise.
+       A silent day is blank; only each week's first day keeps a faint tick, so a quiet repo
+       still shows its weeks without filling the board with dots."""
     hi = max(counts) if counts else 0
     t = Text()
     for i, c in enumerate(counts):
-        if i and (len(counts) - i) % 7 == 0:
+        week = (len(counts) - i) % 7 == 0
+        if i and week:
             t.append(" ")
-        t.append(CELL if c else IDLE, style=HEAT[heat_index(c, hi)] if c else HEAT[0])
+        if c:
+            t.append(CELL, style=HEAT[heat_index(c, hi)])
+        else:
+            t.append(IDLE if week else " ", style=HEAT[0])
     return t
 
 
@@ -173,7 +205,7 @@ def ci_failed(path, branch):
     if hit and time.time() - hit[0] < CI_EVERY:
         return hit[1]
     failed = False
-    if shutil.which("gh") and branch != "HEAD":
+    if shutil.which("gh") and branch not in NOT_BRANCHES:
         try:
             r = subprocess.run(["gh", "run", "list", "-L", "20", "-b", branch,
                                 "--json", "workflowName,status,conclusion"],
@@ -204,7 +236,9 @@ def scan_one(root, d):
     counts = git(d, "rev-list", "--left-right", "--count", "@{u}...HEAD")
     behind, ahead = parse_counts(counts)
     ts = git(d, "log", "-1", "--format=%ct")
-    branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?"
+    branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
+    if branch == "HEAD":                 # git's word for both, neither of them a branch
+        branch = "detached" if ts else "no commits"
     upstream = git(d, "rev-parse", "--abbrev-ref", "@{u}") if counts else ""
     return {
         "name": str(d.relative_to(root)), "path": d, "branch": branch,
@@ -240,6 +274,9 @@ class Devboard(App):
         /* stable, or the scrollbar appearing steals a column mid-render and the line I built
            to exactly fill the width wraps */
         scrollbar-size: 1 1; scrollbar-gutter: stable;
+        scrollbar-background: #1a1d23; scrollbar-background-hover: #1a1d23;
+        scrollbar-background-active: #1a1d23; scrollbar-corner-color: #1a1d23;
+        scrollbar-color: #2e3440; scrollbar-color-hover: #3a414f; scrollbar-color-active: #4a5263;
     }
     /* background only: setting a colour here would override each cell's own style and
        flatten the heat strip on the selected row */
@@ -300,18 +337,36 @@ class Devboard(App):
     # its own heading before the first commit row
     CHROME, CARD = 8, 6
 
-    def detail_rows(self) -> int:
-        """Whatever is left after the chrome and the board (+1: its bottom padding). The panel
-           fills itself with history rather than leaving tinted emptiness."""
-        return self.size.height - self.CHROME - len(self.rows) - 1 - self.CARD
+    def board_height(self) -> int:
+        """Lines for the board (+1: its bottom padding). The whole list when it leaves the panel
+           DETAIL_MIN lines; otherwise the board scrolls, because a long list is exactly when the
+           panel's words are worth most. Only a terminal too short for both gives it all up."""
+        room, want = self.size.height - self.CHROME, len(self.rows) + 1
+        if room - want - self.CARD >= DETAIL_MIN:
+            return want
+        squeezed = room - self.CARD - DETAIL_MIN
+        return squeezed if squeezed >= BOARD_MIN else max(3, min(want, room))
 
-    def head(self, status: Text) -> None:
-        """Brand hard left, status hard right, on one line as wide as the board."""
-        t = Text("▌ ", style=BLUE)
-        t.append("devboard", style=f"bold {TEXT}"); t.append(f"  {VERSION}", style=FAINT)
+    def detail_rows(self) -> int:
+        """Whatever is left after the chrome and the board. The panel fills itself with history
+           rather than leaving tinted emptiness."""
+        return self.size.height - self.CHROME - self.board_height() - self.CARD
+
+    def head(self, *statuses: Text) -> None:
+        """Brand hard left, status hard right, on one line as wide as the board. `statuses` run
+           widest first: a narrow terminal gets the terser one, then loses the version, and only
+           then the status, rather than wrapping or cutting a count in half."""
         width = self.board_width(self.query_one("#head"))
-        t.append(" " * max(1, width - len(t.plain) - len(status.plain))); t.append_text(status)
-        t.truncate(width)            # a narrow terminal drops the status rather than wrapping
+        for version in (True, False):
+            t = Text("▌ ", style=BLUE)
+            t.append("devboard", style=f"bold {TEXT}")
+            if version:
+                t.append(f"  {VERSION}", style=FAINT)
+            for status in statuses:
+                if len(t.plain) + 2 + len(status.plain) <= width:
+                    t.append(" " * (width - len(t.plain) - len(status.plain))); t.append_text(status)
+                    return self.query_one("#head", Static).update(t)
+        t.truncate(width)
         self.query_one("#head", Static).update(t)
 
     def reveal_one(self) -> None:
@@ -367,7 +422,7 @@ class Devboard(App):
 
         head = Text("▌ ", style=BLUE)
         head.append(short(r["path"]), style=f"bold {TEXT}")
-        head.append(f"   {r['branch']}", style=DIM if r["branch"] in ("main", "master") else BLUE)
+        head.append(f"   {r['branch']}", style=branch_style(r["branch"]))
         if r["upstream"]:
             head.append(f" → {r['upstream']}", style=SUBTLE)
 
@@ -434,16 +489,19 @@ class Devboard(App):
     def measure(self, width):
         """lane | flags | strip | age. The strip takes what's left, rounded down to whole weeks —
            and the board then shrinks to that, so no slack opens up between the columns."""
-        lane = 2 + max(len(r["name"]) + (0 if r["branch"] in ("main", "master") else len(r["branch"]) + 2)
+        lane = 2 + max(len(r["name"]) + (0 if r["branch"] in QUIET_BRANCHES else len(r["branch"]) + 2)
                        for r in self.rows)
-        flags = max([FLAGS_W] + [len(self.flags(r).plain) for r in self.rows])
+        # each badge kind's slot is as wide as its widest value on the board; a kind no repo
+        # has takes no room at all
+        slots = [badges(r["dirty"], r["behind"], r["ahead"], r["upstream"], r["ci"]) for r in self.rows]
+        self.slot_w = [max(slot_len(s[i]) for s in slots) for i in range(len(slots[0]))]
+        flags = max(FLAGS_W, len(self.flags(self.rows[0]).plain))
         room = max(0, width - lane - flags - AGE_W - 3 * GAP)
         days = fit_days(room)
         return lane, flags, (strip_width(days) if room >= MIN_DAYS else 0), days
 
-    @staticmethod
-    def flags(r) -> Text:
-        return fmt_flags(r["dirty"], r["behind"], r["ahead"], r["upstream"], r["ci"])
+    def flags(self, r) -> Text:
+        return fmt_flags(r["dirty"], r["behind"], r["ahead"], r["upstream"], r["ci"], widths=self.slot_w)
 
     def row_line(self, r) -> Text:
         # the bar carries the worst thing about the repo; colour is the whole status column
@@ -453,8 +511,8 @@ class Devboard(App):
         if org:                                      # the group recedes; the repo is the name
             t.append(f"{org}/", style=FAINT if fade(r["ts"]) == FADE[-1][1] else SUBTLE)
         t.append(leaf, style=fade(r["ts"]))
-        if r["branch"] not in ("main", "master"):   # naming "main" ten times says nothing
-            t.append(f"  {r['branch']}", style=BLUE)
+        if r["branch"] not in QUIET_BRANCHES:
+            t.append(f"  {r['branch']}", style=branch_style(r["branch"]))
         t.append(" " * (self.lane_w - len(t.plain) + GAP))
         flags = self.flags(r)
         t.append_text(flags); t.append(" " * (self.flags_w - len(flags.plain) + GAP))
@@ -476,7 +534,7 @@ class Devboard(App):
         self.lane_w, self.flags_w, self.strip_w, self.days = self.measure(
             min(MAX_W, table.scrollable_content_region.width or self.size.width - 4))
         # the list keeps only the height it uses, so the detail pane sits right under it
-        table.styles.height = max(3, min(len(self.rows) + 1, self.size.height - self.CHROME))
+        table.styles.height = self.board_height()
         self.query_one("#cols", Static).update(self.column_header())
         if animate:
             self.queue = list(self.rows)
@@ -487,17 +545,30 @@ class Devboard(App):
             if 0 < self.keep < len(self.rows):
                 table.move_cursor(row=self.keep)
             self.show_detail()
-        status = Text(short(ROOT), style=DIM)
-        # count bright, word quiet: the eye lands on the numbers first
-        for key, word, style in (("dirty", "dirty", AMBER), ("ahead", "unpushed", BLUE),
-                                 ("behind", "behind", CYAN), ("ci", "ci failing", RED)):
-            count = sum(1 for r in self.rows if r[key])
+        self.head(*self.statuses())
+
+    def statuses(self) -> list:
+        """The header's summary, widest first: words, then words packed closer, then the
+           badges' own glyphs. Count bright, word quiet: the eye lands on the numbers first."""
+        kinds = [(sum(1 for r in self.rows if r[key]), word, glyph, style)
+                 for key, word, glyph, style in (("dirty", "dirty", "●", AMBER), ("ahead", "unpushed", "↑", BLUE),
+                                                 ("behind", "behind", "↓", CYAN), ("ci", "ci failing", "✗", RED))]
+        out = []
+        for gap, path in (("     ", True), ("   ", True), ("   ", False)):
+            t = Text(short(ROOT), style=DIM) if path else Text()
+            for count, word, _, style in kinds:
+                if count:
+                    t.append(gap if t.plain else ""); t.append(str(count), style=f"bold {style}")
+                    t.append(f" {word}", style=SUBTLE)
+            t.append(gap if t.plain else ""); t.append(str(len(self.rows)), style=f"bold {FG}")
+            t.append(" repos", style=SUBTLE)
+            out.append(t)
+        t = Text()
+        for count, _, glyph, style in kinds:
             if count:
-                status.append("     "); status.append(str(count), style=f"bold {style}")
-                status.append(f" {word}", style=SUBTLE)
-        status.append("     "); status.append(str(len(self.rows)), style=f"bold {FG}")
-        status.append(" repos", style=SUBTLE)
-        self.head(status)
+                t.append("  " if t.plain else ""); t.append(f"{glyph}{count}", style=style)
+        t.append("  " if t.plain else ""); t.append(str(len(self.rows)), style=f"bold {FG}")
+        return out + [t]
 
     def column_header(self) -> Text:
         """Labels over lane and badges, month names over the strip, so it reads as a timeline."""
@@ -534,6 +605,12 @@ def selftest():
     assert fmt_flags(0, 0, 0, False).plain == "local"
     assert fmt_flags(3, 4, 2, True).plain == "●3 ↑2 ↓4"  # dirty, then ahead, then behind
     assert fmt_flags(1, 0, 0, True, True).plain == "●1 ✗ci"
+    w = [3, 2, 3]                                          # slots: dirty, sync, ci
+    a, b = fmt_flags(12, 0, 0, True, False, w).plain, fmt_flags(0, 0, 9, True, True, w).plain
+    assert a == "●12" + " " * 7 and b == "    ↑9 ✗ci" and len(a) == len(b)   # same slots, same columns
+    assert fmt_flags(0, 2, 1, True, widths=[0, 6, 0]).plain == "↑1↓2  "      # ahead and behind share a slot
+    assert fmt_flags(0, 0, 0, False, widths=[0, 5, 0]).plain == "local"      # so does having no upstream
+    assert fmt_flags(0, 0, 0, True, widths=[0, 0, 0]).plain == ""
     run = lambda w, c, s="completed": {"workflowName": w, "status": s, "conclusion": c}
     assert parse_ci("") is False and parse_ci("[]") is False
     assert parse_ci(json.dumps([run("ci", "failure")])) is True
@@ -559,7 +636,8 @@ def selftest():
     assert heat_index(1, 10) == 1        # a 1-commit day never rounds away to "silent"
     assert heat_index(1, 1) == len(HEAT) - 1                             # lone commit reads as peak
     assert len(heat_strip([1] * 14).plain) == strip_width(14) == 15      # 14 days + one week gap
-    assert heat_strip([0] * 14).plain == IDLE * 7 + " " + IDLE * 7       # gap sits on the week line
+    week = IDLE + " " * 6                 # a silent week: one tick on its first day
+    assert heat_strip([0] * 14).plain == week + " " + week               # gap sits on the week line
     assert strip_width(0) == 0 and strip_width(7) == 7
     assert all(strip_width(fit_days(w)) <= w and strip_width(fit_days(w) + 7) > w   # widest that fits
                for w in range(MIN_DAYS, strip_width(MAX_DAYS)))
