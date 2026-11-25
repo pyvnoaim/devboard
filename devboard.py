@@ -45,7 +45,10 @@ RELOAD_EVERY = 15.0
 CI_EVERY = 120.0     # gh is a network call per repo; the git rescan is local and can run far more often
 CI_FAIL = {"failure", "timed_out", "startup_failure"}
 QUIET_BRANCHES = ("main", "master")        # naming these on every row says nothing
-NOT_BRANCHES = ("detached", "no commits")  # states, shown dim, never in branch blue
+# States, shown dim, never in branch blue. Each holds a character git forbids in a branch name,
+# so a real branch can never be mistaken for one.
+NOT_BRANCHES = ("detached HEAD", "no commits", "?")
+SHA = "#4f7bc4"      # commit ids in the panel; its own colour, so retuning HEAT leaves it alone
 DETAIL_MIN = 8       # commit lines the lower panel keeps; a long board scrolls rather than hide it
 BOARD_MIN = 6        # below this the board wins and the panel hides
 
@@ -83,7 +86,7 @@ def badges(dirty, behind, ahead, has_upstream, ci_failed=False):
 
 
 def slot_len(slot):
-    return sum(len(text) for text, _ in slot)
+    return sum(len(text) for text, _ in slot) + max(0, len(slot) - 1)   # + the spaces between
 
 
 def fmt_flags(dirty, behind, ahead, has_upstream, ci_failed=False, widths=None):
@@ -97,8 +100,8 @@ def fmt_flags(dirty, behind, ahead, has_upstream, ci_failed=False, widths=None):
                 t.append(" " if t.plain else ""); t.append(text, style=style)
         elif widths[i]:
             t.append(" " if t.plain else "")
-            for text, style in slot:
-                t.append(text, style=style)
+            for j, (text, style) in enumerate(slot):
+                t.append(" " if j else ""); t.append(text, style=style)
             t.append(" " * (widths[i] - slot_len(slot)))
     return t
 
@@ -236,9 +239,11 @@ def scan_one(root, d):
     counts = git(d, "rev-list", "--left-right", "--count", "@{u}...HEAD")
     behind, ahead = parse_counts(counts)
     ts = git(d, "log", "-1", "--format=%ct")
-    branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
-    if branch == "HEAD":                 # git's word for both, neither of them a branch
-        branch = "detached" if ts else "no commits"
+    # "HEAD" is git's word for both a detached head and a repo with no commits yet; nothing at
+    # all means git refused the repo (ownership, a broken .git), and then we know nothing.
+    branch = git(d, "rev-parse", "--abbrev-ref", "HEAD") or "?"
+    if branch == "HEAD":
+        branch = "detached HEAD" if ts else "no commits"
     upstream = git(d, "rev-parse", "--abbrev-ref", "@{u}") if counts else ""
     return {
         "name": str(d.relative_to(root)), "path": d, "branch": branch,
@@ -320,7 +325,9 @@ class Devboard(App):
     def action_reload(self) -> None:
         if self.spin is None:
             frames = itertools.cycle(SPIN)
-            tick = lambda: self.head(Text(f"{next(frames)} scanning {short(ROOT)}", style=DIM))
+            def tick():
+                frame = next(frames)    # a narrow terminal still gets the spinner, so a scan never looks hung
+                self.head(Text(f"{frame} scanning {short(ROOT)}", style=DIM), Text(frame, style=DIM))
             tick()
             self.spin = self.set_interval(0.08, tick)
         self.load_rows()
@@ -338,11 +345,12 @@ class Devboard(App):
     CHROME, CARD = 8, 6
 
     def board_height(self) -> int:
-        """Lines for the board (+1: its bottom padding). The whole list when it leaves the panel
-           DETAIL_MIN lines; otherwise the board scrolls, because a long list is exactly when the
-           panel's words are worth most. Only a terminal too short for both gives it all up."""
+        """Lines for the board (+1: its bottom padding). The whole list whenever the panel still
+           shows beside it, however short. Only when the panel would vanish does the board
+           scroll to give it DETAIL_MIN lines: a long list is exactly when its words are worth
+           most. A terminal too short for both gives the panel up."""
         room, want = self.size.height - self.CHROME, len(self.rows) + 1
-        if room - want - self.CARD >= DETAIL_MIN:
+        if room - want - self.CARD >= 2:
             return want
         squeezed = room - self.CARD - DETAIL_MIN
         return squeezed if squeezed >= BOARD_MIN else max(3, min(want, room))
@@ -459,7 +467,7 @@ class Devboard(App):
                 sha, _, rest = log[i].partition("\x1f")
                 subject, _, ts = rest.rpartition("\x1f")
                 age = fmt_age(int(ts)) if ts.isdigit() else ""
-                t.append(f"{sha}  ", style=HEAT[3])
+                t.append(f"{sha}  ", style=SHA)
                 body = Text(subject, style=FG if i == 0 else DIM)
                 body.truncate(max(0, w - len(t.plain) - AGE_W - 1), overflow="ellipsis", pad=True)
                 t.append_text(body); t.append(age.rjust(AGE_W + 1), style=SUBTLE)
@@ -530,6 +538,7 @@ class Devboard(App):
             self.reveal.stop(); self.reveal = None
         table.clear()
         if not self.rows:
+            self.head(Text(f"no repos in {short(ROOT)}", style=DIM), Text("no repos", style=DIM))
             return
         self.lane_w, self.flags_w, self.strip_w, self.days = self.measure(
             min(MAX_W, table.scrollable_content_region.width or self.size.width - 4))
@@ -548,27 +557,24 @@ class Devboard(App):
         self.head(*self.statuses())
 
     def statuses(self) -> list:
-        """The header's summary, widest first: words, then words packed closer, then the
-           badges' own glyphs. Count bright, word quiet: the eye lands on the numbers first."""
-        kinds = [(sum(1 for r in self.rows if r[key]), word, glyph, style)
-                 for key, word, glyph, style in (("dirty", "dirty", "●", AMBER), ("ahead", "unpushed", "↑", BLUE),
-                                                 ("behind", "behind", "↓", CYAN), ("ci", "ci failing", "✗", RED))]
+        """The header's summary, widest first: words, then words packed closer, then without the
+           path, then the total alone. Always words: the badges' glyphs count commits on a row,
+           and here they would be counting repos. Count bright, word quiet: the eye lands on
+           the numbers first."""
+        kinds = [(sum(1 for r in self.rows if r[key]), word, style)
+                 for key, word, style in (("dirty", "dirty", AMBER), ("ahead", "unpushed", BLUE),
+                                          ("behind", "behind", CYAN), ("ci", "ci failing", RED))]
         out = []
-        for gap, path in (("     ", True), ("   ", True), ("   ", False)):
+        for gap, path, detail in (("     ", True, True), ("   ", True, True), ("  ", False, True), ("", False, False)):
             t = Text(short(ROOT), style=DIM) if path else Text()
-            for count, word, _, style in kinds:
+            for count, word, style in kinds if detail else ():
                 if count:
                     t.append(gap if t.plain else ""); t.append(str(count), style=f"bold {style}")
                     t.append(f" {word}", style=SUBTLE)
             t.append(gap if t.plain else ""); t.append(str(len(self.rows)), style=f"bold {FG}")
             t.append(" repos", style=SUBTLE)
             out.append(t)
-        t = Text()
-        for count, _, glyph, style in kinds:
-            if count:
-                t.append("  " if t.plain else ""); t.append(f"{glyph}{count}", style=style)
-        t.append("  " if t.plain else ""); t.append(str(len(self.rows)), style=f"bold {FG}")
-        return out + [t]
+        return out
 
     def column_header(self) -> Text:
         """Labels over lane and badges, month names over the strip, so it reads as a timeline."""
@@ -608,7 +614,8 @@ def selftest():
     w = [3, 2, 3]                                          # slots: dirty, sync, ci
     a, b = fmt_flags(12, 0, 0, True, False, w).plain, fmt_flags(0, 0, 9, True, True, w).plain
     assert a == "●12" + " " * 7 and b == "    ↑9 ✗ci" and len(a) == len(b)   # same slots, same columns
-    assert fmt_flags(0, 2, 1, True, widths=[0, 6, 0]).plain == "↑1↓2  "      # ahead and behind share a slot
+    assert fmt_flags(0, 2, 1, True, widths=[0, 6, 0]).plain == "↑1 ↓2 "      # ahead and behind share a slot
+    assert slot_len(badges(0, 2, 1, True)[1]) == 5 and slot_len([]) == 0
     assert fmt_flags(0, 0, 0, False, widths=[0, 5, 0]).plain == "local"      # so does having no upstream
     assert fmt_flags(0, 0, 0, True, widths=[0, 0, 0]).plain == ""
     run = lambda w, c, s="completed": {"workflowName": w, "status": s, "conclusion": c}
